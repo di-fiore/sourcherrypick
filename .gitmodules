@@ -1,0 +1,3 @@
+[submodule "YeSQL"]
+	path = YeSQL
+	url = https://github.com/athenarc/YeSQL.git
