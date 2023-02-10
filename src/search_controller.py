@@ -20,6 +20,8 @@ import os
 import sys
 import time
 
+import docker
+
 import docker_controller
 import bayesian_optimization_engine
 
@@ -36,13 +38,14 @@ def parse_args(available_memory):
         '-c', '--cpu_limit',
         type=float,
         required=True,
-        help="The (float) number of CPUs to give to the container. Mandatory."
+        help="The (float) max number of CPUs to give to the container. "
+             "Mandatory."
     )
     parser.add_argument(
         '-m', '--memory_limit',
         type=int,
         required=True,
-        help="The (int) bytes of RAM to give to the container. Mandatory."
+        help="The (int) max bytes of RAM to give to the container. Mandatory."
     )
     parser.add_argument(
         '-t', '--time_limit',
@@ -55,7 +58,16 @@ def parse_args(available_memory):
         '-s', '--sql_script',
         type=str,
         required=True,
-        help="The sql queries to run against the database. Mandatory."
+        help="The sql queries script file to run against the database. "
+             "Mandatory."
+    )
+    parser.add_argument(
+        '-i', '--iterations',
+        type=int,
+        required=True,
+        help="The number of bayesian optimization steps to perform. The more "
+             "steps the more likely to find a good minimum. Optional. Default "
+             "value is 5."
     )
     parser.add_argument(
         '-d', '--debug',
@@ -99,6 +111,12 @@ def parse_args(available_memory):
     if args.time_limit > 3600:
         print("A maximum of one hour is allowed for container time limit.",
               file=sys.stderr)
+        sys.exit(1)
+
+    # sanity check for iterations
+    if not 1 <= args.iterations <= 100:
+        print("Iterations must be between 1 and 100", file=sys.stderr)
+        sys.exit(1)
 
     # convert to absolute path, as it is required by docker to be moutned
     args.sql_script = os.path.abspath(args.sql_script)
@@ -185,12 +203,20 @@ def meminfo():
 ###############################################################################
 
 
-def black_box_function(controller, cpu, ram, sql_script, max_time):
+def run_experiment(controller, cpu, ram, sql_script, max_time):
     """The black box function we want to minimize.
 
     We give it cpu and ram (our only resources) and it calculates time to run
     to completion.
+
+    Note: return negative, as the underlying library only supports maximization
+    (so essentially we do minimization).
     """
+
+    # accomodate for the underlying library using only full float numbers
+    cpu = round(cpu, 2)
+    ram = int(ram)
+
     log.info("Attempting to start container")
     container = controller.run_container(
         'sourcherrypick', 'latest',
@@ -217,8 +243,14 @@ def black_box_function(controller, cpu, ram, sql_script, max_time):
         )
 
         if not in_time:
-            total_time = -1
-            container.kill()
+            total_time = max_time * -2  # return a special "too big" value
+
+            try:
+                container.kill()
+            except docker.errors.APIError as exc:
+                log.error("Couldn't kill container %s due to %s. Please "
+                          "manually verify if it is still running after "
+                          "execution completes.", container.name, exc)
             log.warning("Execution timed out")
         else:
             exit_code = controller.container_exit_code(container.name)
@@ -226,7 +258,7 @@ def black_box_function(controller, cpu, ram, sql_script, max_time):
                 total_time = time.time() - start
                 log.info("Container execution finished on time")
             else:
-                total_time = -1
+                total_time = max_time * -2  # return a special "too big" value
                 log.info("Container execution finished unsuccessfully")
 
         log.info("Execution logs follow\n")
@@ -240,7 +272,9 @@ def black_box_function(controller, cpu, ram, sql_script, max_time):
         container.remove()
         log.info("Pre-exit cleanup completed")
 
-    return total_time
+    if total_time < 0:
+        return total_time
+    return total_time * -1
 ###############################################################################
 
 
@@ -260,22 +294,40 @@ def main():
     vm_controller = docker_controller.DockerController()
     log.info("Connection to docker daemon established")
 
-    bayes_optimizer = bayesian_optimization_engine.BayesianOptimizationEngine()
+    bayes_optimizer = bayesian_optimization_engine.BayesianOptimizationEngine(
+        min_cpu=0.1,             # 10 percent of one cpu
+        max_cpu=args.cpu_limit,
+        min_ram=60*10**6,        # 60 MB of RAM
+        max_ram=args.memory_limit,
+        black_box_function = lambda cpu, ram: run_experiment(
+            vm_controller, cpu, ram,args.sql_script, args.time_limit)
+    )
+
+    log.info("Starting bayes optimization")
+    start = time.time()
+
+    bayes_optimizer.optimize(
+        initialization_points=3,    # same value as the paper (using the same kernel function, Matern)
+        iterations=args.iterations
+    )
+
+    log.info("Finished bayes optimization after %s secs", time.time() - start)
+    log.info("Best values: CPU: %.2f RAM: %s execution time: %.2f cost: %.3f",
+        bayes_optimizer.optimizer.max['params']['cpu'],
+        bytes2human(int(bayes_optimizer.optimizer.max['params']['ram'])),
+        bayes_optimizer.optimizer.max['target']*-1,
+        bayes_optimizer.cost(bayes_optimizer.optimizer.max['params']['cpu'],
+        bayes_optimizer.optimizer.max['params']['ram'],
+        bayes_optimizer.optimizer.max['target']*-1
+    ))
 
 
-    # TODO: Convert to loop and generate values to test and optimize
-    cpu = args.cpu_limit
-    ram = args.memory_limit
-
-    time_ran = black_box_function(
-        vm_controller, cpu, ram, args.sql_script, args.time_limit)
-
-    if time_ran < 0:
-        cost = float('inf')
-    else:
-        cost = bayes_optimizer.cost(cpu, ram, time_ran)
-
-    log.info("Total cost: %.3f", cost)
+    log.info("Full bayesian optimization log:")
+    for i, item in enumerate(bayes_optimizer.optimizer.res):
+        log.info("Iteration %s: cpu %.2f ram %s  exec time: %.2f", i,
+            item['params']['cpu'],
+            bytes2human(int(item['params']['ram'])),
+            item['target']*-1)
 
     log.info("Exiting successfully")
 ###############################################################################

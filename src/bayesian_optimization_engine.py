@@ -36,13 +36,16 @@ class BayesianOptimizationEngine:
         }
     }
 
-    # TODO: missing functionality:
-    #   * compute next parameters
-    #   * decide when you meet stop criteria
-    def __init__(self):
+    def __init__(self, min_cpu, max_cpu, min_ram, max_ram, black_box_function):
         """Initialization function"""
-        self.iterations = 0
-        self.improvements = []
+        self.bounds = {
+            'cpu': (min_cpu, max_cpu),
+            'ram': (min_ram, max_ram)
+        }
+        self.optimizer = BayesianOptimization(
+            f=black_box_function,
+            pbounds=self.bounds
+        )
     ###########################################################################
 
     def cost(self, cpu_used, ram_used, total_time):
@@ -50,6 +53,11 @@ class BayesianOptimizationEngine:
            The noise "epsilon" is also used, to emulate the functions of the
            paper.
         """
+        # if for whatever reason the computation didn't succeed,
+        # set the cost as infinite
+        if total_time < 0:
+            return float('inf')
+
         cpu_epsilon = docker_monitor.get_noise()
         ram_epsilon = docker_monitor.get_noise()
 
@@ -63,5 +71,23 @@ class BayesianOptimizationEngine:
         ram_cost = effective_ram * self.COSTS['RAM']['price']
 
         return (cpu_cost + ram_cost) * total_time
+    ###########################################################################
+
+    def optimize(self, initialization_points, iterations):
+        """Run the optimization loop and return the optimal values.
+
+        Select initialization_points number of points based off random
+        exploration, to map out the search space.
+
+        Run iterations number steps of the bayesian optimization.
+
+        Return the best values found.
+        """
+        self.optimizer.maximize(
+            init_points=initialization_points,
+            n_iter=iterations
+        )
+
+        return self.optimizer.max
     ###########################################################################
 ###############################################################################
