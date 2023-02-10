@@ -53,12 +53,12 @@ python3 src/search_controller.py -c 3 -m 100000000 -t 10 -s YeSQL/sql_queries/zi
 
 * Example 2: run an unsuccessfull experiment, will fail due to not enough memory
 ```sh
-python3 src/search_controller.py -c 3 -m 10000 -t 10 -s YeSQL/sql_queries/zillow.sql
+python3 src/search_controller.py -c 3 -m 7000000 -t 10 -s YeSQL/sql_queries/zillow.sql
 ```
 
 * Example 3: run an unsuccessfull experiment, will fail due to not enough execution time
 ```sh
-python3 src/search_controller.py -c 3 -m 10000 -t 1 -s YeSQL/sql_queries/zillow.sql
+python3 src/search_controller.py -c 3 -m 100000000 -t 1 -s YeSQL/sql_queries/zillow.sql
 ```
 
 

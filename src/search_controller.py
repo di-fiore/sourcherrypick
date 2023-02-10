@@ -17,6 +17,7 @@ import argparse
 import logging
 import multiprocessing
 import os
+import random
 import sys
 import time
 
@@ -64,7 +65,8 @@ def parse_args(available_memory):
     parser.add_argument(
         '-i', '--iterations',
         type=int,
-        required=True,
+        required=False,
+        default=5,
         help="The number of bayesian optimization steps to perform. The more "
              "steps the more likely to find a good minimum. Optional. Default "
              "value is 5."
@@ -242,8 +244,12 @@ def run_experiment(controller, cpu, ram, sql_script, max_time):
             container.name
         )
 
+
+        # return a special, random "too big" value
+        # needs to be random, else the BO process cannot properly explore the
+        # search space
         if not in_time:
-            total_time = max_time * -2  # return a special "too big" value
+            total_time = (max_time + random.randint(0,1000)) * -2
 
             try:
                 container.kill()
@@ -258,7 +264,10 @@ def run_experiment(controller, cpu, ram, sql_script, max_time):
                 total_time = time.time() - start
                 log.info("Container execution finished on time")
             else:
-                total_time = max_time * -2  # return a special "too big" value
+                # return a special, random "too big" value
+                # needs to be random, else the BO process cannot properly
+                # explore the search space
+                total_time = (max_time + random.randint(0,1000)) * -2
                 log.info("Container execution finished unsuccessfully")
 
         log.info("Execution logs follow\n")
@@ -295,9 +304,9 @@ def main():
     log.info("Connection to docker daemon established")
 
     bayes_optimizer = bayesian_optimization_engine.BayesianOptimizationEngine(
-        min_cpu=0.1,             # 10 percent of one cpu
+        min_cpu=min(args.cpu_limit, 0.1),             # 10 percent of one cpu
         max_cpu=args.cpu_limit,
-        min_ram=60*10**6,        # 60 MB of RAM
+        min_ram=min(args.memory_limit, 60*10**6),     # 60 MB of RAM
         max_ram=args.memory_limit,
         black_box_function = lambda cpu, ram: run_experiment(
             vm_controller, cpu, ram,args.sql_script, args.time_limit)
@@ -320,7 +329,8 @@ def main():
         bayes_optimizer.optimizer.max['params']['ram'],
         bayes_optimizer.optimizer.max['target']*-1
     ))
-
+    if bayes_optimizer.optimizer.max['target'] <= args.time_limit*-2:
+        log.warning("No valid parameters found due to the given constraints.")
 
     log.info("Full bayesian optimization log:")
     for i, item in enumerate(bayes_optimizer.optimizer.res):
